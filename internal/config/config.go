@@ -140,6 +140,23 @@ func (c *AuthConfig) Token(hostname string) (string, string) {
 	return token, source
 }
 
+// HasEnvToken returns true when a token has been specified in an
+// environment variable, else returns false.
+func (c *AuthConfig) HasEnvToken() bool {
+	// This will check if there are any environment variable
+	// authentication tokens set for enterprise hosts.
+	// Any non-github.com hostname is fine here
+	hostname := "example.com"
+	if c.tokenOverride != nil {
+		token, _ := c.tokenOverride(hostname)
+		if token != "" {
+			return true
+		}
+	}
+	token, _ := ghAuth.TokenFromEnvOrConfig(hostname)
+	return token != ""
+}
+
 // SetToken will override any token resolution and return the given
 // token and source for all calls to Token. Use for testing purposes only.
 func (c *AuthConfig) SetToken(token, source string) {
