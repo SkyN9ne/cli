@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/AlecAivazis/survey/v2/terminal"
@@ -87,6 +88,7 @@ func startLiveShareSession(ctx context.Context, codespace *api.Codespace, a *App
 
 //go:generate moq -fmt goimports -rm -skip-ensure -out mock_api.go . apiClient
 type apiClient interface {
+	ServerURL() string
 	GetUser(ctx context.Context) (*api.User, error)
 	GetCodespace(ctx context.Context, name string, includeConnection bool) (*api.Codespace, error)
 	GetOrgMemberCodespace(ctx context.Context, orgName string, userName string, codespaceName string) (*api.Codespace, error)
@@ -265,4 +267,15 @@ func addDeprecatedRepoShorthand(cmd *cobra.Command, target *string) error {
 	}
 
 	return nil
+}
+
+// filterCodespacesByRepoOwner filters a list of codespaces by the owner of the repository.
+func filterCodespacesByRepoOwner(codespaces []*api.Codespace, repoOwner string) []*api.Codespace {
+	filtered := make([]*api.Codespace, 0, len(codespaces))
+	for _, c := range codespaces {
+		if strings.EqualFold(c.Repository.Owner.Login, repoOwner) {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered
 }

@@ -1,13 +1,12 @@
 package api
 
 // For descriptions of service interfaces, see:
-// - https://online.visualstudio.com/api/swagger (for visualstudio.com)
 // - https://docs.github.com/en/rest/reference/repos (for api.github.com)
 // - https://github.com/github/github/blob/master/app/api/codespaces.rb (for vscs_internal)
 // TODO(adonovan): replace the last link with a public doc URL when available.
 
 // TODO(adonovan): a possible reorganization would be to split this
-// file into three internal packages, one per backend service, and to
+// file into two internal packages, one per backend service, and to
 // rename api.API to github.Client:
 //
 // - github.GetUser(github.Client)
@@ -20,7 +19,6 @@ package api
 // - codespaces.GetToken(Client, login, name)
 // - codespaces.List(Client, user)
 // - codespaces.Start(Client, token, codespace)
-// - visualstudio.GetRegionLocation(http.Client) // no dependency on github
 //
 // This would make the meaning of each operation clearer.
 
@@ -34,6 +32,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -42,13 +41,14 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/cli/cli/v2/api"
+	"github.com/cli/cli/v2/internal/ghinstance"
+	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/opentracing/opentracing-go"
 )
 
 const (
-	githubServer = "https://github.com"
-	githubAPI    = "https://api.github.com"
-	vscsAPI      = "https://online.visualstudio.com"
+	defaultAPIURL    = "https://api.github.com"
+	defaultServerURL = "https://github.com"
 )
 
 const (
@@ -60,31 +60,40 @@ const (
 
 // API is the interface to the codespace service.
 type API struct {
-	client       httpClient
-	vscsAPI      string
+	client       func() (*http.Client, error)
 	githubAPI    string
 	githubServer string
 	retryBackoff time.Duration
 }
 
-type httpClient interface {
-	Do(req *http.Request) (*http.Response, error)
-}
-
 // New creates a new API client connecting to the configured endpoints with the HTTP client.
-func New(serverURL, apiURL, vscsURL string, httpClient httpClient) *API {
-	if serverURL == "" {
-		serverURL = githubServer
-	}
+func New(f *cmdutil.Factory) *API {
+	apiURL := os.Getenv("GITHUB_API_URL")
 	if apiURL == "" {
-		apiURL = githubAPI
+		cfg, err := f.Config()
+		if err != nil {
+			// fallback to the default api endpoint
+			apiURL = defaultAPIURL
+		} else {
+			host, _ := cfg.Authentication().DefaultHost()
+			apiURL = ghinstance.RESTPrefix(host)
+		}
 	}
-	if vscsURL == "" {
-		vscsURL = vscsAPI
+
+	serverURL := os.Getenv("GITHUB_SERVER_URL")
+	if serverURL == "" {
+		cfg, err := f.Config()
+		if err != nil {
+			// fallback to the default server endpoint
+			serverURL = defaultServerURL
+		} else {
+			host, _ := cfg.Authentication().DefaultHost()
+			serverURL = ghinstance.HostPrefix(host)
+		}
 	}
+
 	return &API{
-		client:       httpClient,
-		vscsAPI:      strings.TrimSuffix(vscsURL, "/"),
+		client:       f.HttpClient,
 		githubAPI:    strings.TrimSuffix(apiURL, "/"),
 		githubServer: strings.TrimSuffix(serverURL, "/"),
 		retryBackoff: 100 * time.Millisecond,
@@ -95,6 +104,11 @@ func New(serverURL, apiURL, vscsURL string, httpClient httpClient) *API {
 type User struct {
 	Login string `json:"login"`
 	Type  string `json:"type"`
+}
+
+// ServerURL returns the server url (not the API url), such as https://github.com
+func (a *API) ServerURL() string {
+	return a.githubServer
 }
 
 // GetUser returns the user associated with the given token.
@@ -122,17 +136,24 @@ func (a *API) GetUser(ctx context.Context) (*User, error) {
 
 	var response User
 	if err := json.Unmarshal(b, &response); err != nil {
-		return nil, fmt.Errorf("error unmarshaling response: %w", err)
+		return nil, fmt.Errorf("error unmarshalling response: %w", err)
 	}
 
 	return &response, nil
 }
 
+// RepositoryOwner represents owner of a repository
+type RepositoryOwner struct {
+	Type  string `json:"type"`
+	Login string `json:"login"`
+}
+
 // Repository represents a GitHub repository.
 type Repository struct {
-	ID            int    `json:"id"`
-	FullName      string `json:"full_name"`
-	DefaultBranch string `json:"default_branch"`
+	ID            int             `json:"id"`
+	FullName      string          `json:"full_name"`
+	DefaultBranch string          `json:"default_branch"`
+	Owner         RepositoryOwner `json:"owner"`
 }
 
 // GetRepository returns the repository associated with the given owner and name.
@@ -160,7 +181,7 @@ func (a *API) GetRepository(ctx context.Context, nwo string) (*Repository, error
 
 	var response Repository
 	if err := json.Unmarshal(b, &response); err != nil {
-		return nil, fmt.Errorf("error unmarshaling response: %w", err)
+		return nil, fmt.Errorf("error unmarshalling response: %w", err)
 	}
 
 	return &response, nil
@@ -185,6 +206,15 @@ type Codespace struct {
 	PendingOperationDisabledReason string              `json:"pending_operation_disabled_reason"`
 	IdleTimeoutNotice              string              `json:"idle_timeout_notice"`
 	WebURL                         string              `json:"web_url"`
+	DevContainerPath               string              `json:"devcontainer_path"`
+	Prebuild                       bool                `json:"prebuild"`
+	Location                       string              `json:"location"`
+	IdleTimeoutMinutes             int                 `json:"idle_timeout_minutes"`
+	RetentionPeriodMinutes         int                 `json:"retention_period_minutes"`
+	RetentionExpiresAt             string              `json:"retention_expires_at"`
+	RecentFolders                  []string            `json:"recent_folders"`
+	BillableOwner                  User                `json:"billable_owner"`
+	EnvironmentId                  string              `json:"environment_id"`
 }
 
 type CodespaceGitStatus struct {
@@ -223,8 +253,8 @@ type CodespaceConnection struct {
 	HostPublicKeys []string `json:"hostPublicKeys"`
 }
 
-// CodespaceFields is the list of exportable fields for a codespace.
-var CodespaceFields = []string{
+// ListCodespaceFields is the list of exportable fields for a codespace when using the `gh cs list` command.
+var ListCodespaceFields = []string{
 	"displayName",
 	"name",
 	"owner",
@@ -235,6 +265,30 @@ var CodespaceFields = []string{
 	"lastUsedAt",
 	"machineName",
 	"vscsTarget",
+}
+
+// ViewCodespaceFields is the list of exportable fields for a codespace when using the `gh cs view` command.
+var ViewCodespaceFields = []string{
+	"name",
+	"displayName",
+	"state",
+	"owner",
+	"billableOwner",
+	"location",
+	"repository",
+	"gitStatus",
+	"devcontainerPath",
+	"machineName",
+	"machineDisplayName",
+	"prebuild",
+	"createdAt",
+	"lastUsedAt",
+	"idleTimeoutMinutes",
+	"retentionPeriodDays",
+	"retentionExpiresAt",
+	"recentFolders",
+	"vscsTarget",
+	"environmentId",
 }
 
 func (c *Codespace) ExportData(fields []string) map[string]interface{} {
@@ -249,11 +303,17 @@ func (c *Codespace) ExportData(fields []string) map[string]interface{} {
 			data[f] = c.Repository.FullName
 		case "machineName":
 			data[f] = c.Machine.Name
+		case "machineDisplayName":
+			data[f] = c.Machine.DisplayName
+		case "retentionPeriodDays":
+			data[f] = c.RetentionPeriodMinutes / 1440
 		case "gitStatus":
 			data[f] = map[string]interface{}{
 				"ref":                   c.GitStatus.Ref,
 				"hasUnpushedChanges":    c.GitStatus.HasUnpushedChanges,
 				"hasUncommittedChanges": c.GitStatus.HasUncommittedChanges,
+				"ahead":                 c.GitStatus.Ahead,
+				"behind":                c.GitStatus.Behind,
 			}
 		case "vscsTarget":
 			if c.VSCSTarget != "" && c.VSCSTarget != VSCSTargetProduction {
@@ -336,7 +396,7 @@ func (a *API) ListCodespaces(ctx context.Context, opts ListCodespacesOptions) (c
 
 		dec := json.NewDecoder(resp.Body)
 		if err := dec.Decode(&response); err != nil {
-			return nil, fmt.Errorf("error unmarshaling response: %w", err)
+			return nil, fmt.Errorf("error unmarshalling response: %w", err)
 		}
 
 		nextURL := findNextPage(resp.Header.Get("Link"))
@@ -398,7 +458,7 @@ func (a *API) GetOrgMemberCodespace(ctx context.Context, orgName string, userNam
 
 		dec := json.NewDecoder(resp.Body)
 		if err := dec.Decode(&response); err != nil {
-			return nil, fmt.Errorf("error unmarshaling response: %w", err)
+			return nil, fmt.Errorf("error unmarshalling response: %w", err)
 		}
 
 		for _, cs := range response.Codespaces {
@@ -455,7 +515,7 @@ func (a *API) GetCodespace(ctx context.Context, codespaceName string, includeCon
 
 	var response Codespace
 	if err := json.Unmarshal(b, &response); err != nil {
-		return nil, fmt.Errorf("error unmarshaling response: %w", err)
+		return nil, fmt.Errorf("error unmarshalling response: %w", err)
 	}
 
 	return &response, nil
@@ -563,7 +623,7 @@ func (a *API) GetCodespacesMachines(ctx context.Context, repoID int, branch, loc
 		Machines []*Machine `json:"machines"`
 	}
 	if err := json.Unmarshal(b, &response); err != nil {
-		return nil, fmt.Errorf("error unmarshaling response: %w", err)
+		return nil, fmt.Errorf("error unmarshalling response: %w", err)
 	}
 
 	return response.Machines, nil
@@ -636,7 +696,7 @@ func (a *API) GetCodespaceRepoSuggestions(ctx context.Context, partialSearch str
 		Items []*Repository `json:"items"`
 	}
 	if err := json.Unmarshal(b, &response); err != nil {
-		return nil, fmt.Errorf("error unmarshaling response: %w", err)
+		return nil, fmt.Errorf("error unmarshalling response: %w", err)
 	}
 
 	repoNames := make([]string, len(response.Items))
@@ -683,7 +743,7 @@ func (a *API) GetCodespaceBillableOwner(ctx context.Context, nwo string) (*User,
 		}
 	}
 	if err := json.Unmarshal(b, &response); err != nil {
-		return nil, fmt.Errorf("error unmarshaling response: %w", err)
+		return nil, fmt.Errorf("error unmarshalling response: %w", err)
 	}
 
 	// While this response contains further helpful information ahead of codespace creation,
@@ -815,7 +875,7 @@ func (a *API) startCreate(ctx context.Context, params *CreateCodespaceParams) (*
 
 		var response Codespace
 		if err := json.Unmarshal(b, &response); err != nil {
-			return nil, fmt.Errorf("error unmarshaling response: %w", err)
+			return nil, fmt.Errorf("error unmarshalling response: %w", err)
 		}
 
 		return &response, errProvisioningInProgress // RPC finished before result of creation known
@@ -831,7 +891,7 @@ func (a *API) startCreate(ctx context.Context, params *CreateCodespaceParams) (*
 			return nil, fmt.Errorf("error reading response body: %w", err)
 		}
 		if err := json.Unmarshal(b, &ue); err != nil {
-			return nil, fmt.Errorf("error unmarshaling response: %w", err)
+			return nil, fmt.Errorf("error unmarshalling response: %w", err)
 		}
 
 		if ue.AllowPermissionsURL != "" {
@@ -853,7 +913,7 @@ func (a *API) startCreate(ctx context.Context, params *CreateCodespaceParams) (*
 
 	var response Codespace
 	if err := json.Unmarshal(b, &response); err != nil {
-		return nil, fmt.Errorf("error unmarshaling response: %w", err)
+		return nil, fmt.Errorf("error unmarshalling response: %w", err)
 	}
 
 	return &response, nil
@@ -934,7 +994,7 @@ func (a *API) ListDevContainers(ctx context.Context, repoID int, branch string, 
 
 		dec := json.NewDecoder(resp.Body)
 		if err := dec.Decode(&response); err != nil {
-			return nil, fmt.Errorf("error unmarshaling response: %w", err)
+			return nil, fmt.Errorf("error unmarshalling response: %w", err)
 		}
 
 		nextURL := findNextPage(resp.Header.Get("Link"))
@@ -1007,7 +1067,7 @@ func (a *API) EditCodespace(ctx context.Context, codespaceName string, params *E
 
 	var response Codespace
 	if err := json.Unmarshal(b, &response); err != nil {
-		return nil, fmt.Errorf("error unmarshaling response: %w", err)
+		return nil, fmt.Errorf("error unmarshalling response: %w", err)
 	}
 
 	return &response, nil
@@ -1055,7 +1115,7 @@ func (a *API) GetCodespaceRepositoryContents(ctx context.Context, codespace *Cod
 
 	var response getCodespaceRepositoryContentsResponse
 	if err := json.Unmarshal(b, &response); err != nil {
-		return nil, fmt.Errorf("error unmarshaling response: %w", err)
+		return nil, fmt.Errorf("error unmarshalling response: %w", err)
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(response.Content)
@@ -1073,7 +1133,13 @@ func (a *API) do(ctx context.Context, req *http.Request, spanName string) (*http
 	span, ctx := opentracing.StartSpanFromContext(ctx, spanName)
 	defer span.Finish()
 	req = req.WithContext(ctx)
-	return a.client.Do(req)
+
+	httpClient, err := a.client()
+	if err != nil {
+		return nil, err
+	}
+
+	return httpClient.Do(req)
 }
 
 // setHeaders sets the required headers for the API.
@@ -1093,6 +1159,6 @@ func (a *API) withRetry(f func() (*http.Response, error)) (*http.Response, error
 		if resp.StatusCode < 500 {
 			return resp, nil
 		}
-		return nil, errors.New("retry")
+		return nil, fmt.Errorf("received response with status code %d", resp.StatusCode)
 	}, backoff.WithMaxRetries(bo, 3))
 }

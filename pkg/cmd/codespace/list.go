@@ -70,7 +70,7 @@ func newListCmd(app *App) *cobra.Command {
 
 	listCmd.Flags().StringVarP(&opts.orgName, "org", "o", "", "The `login` handle of the organization to list codespaces for (admin-only)")
 	listCmd.Flags().StringVarP(&opts.userName, "user", "u", "", "The `username` to list codespaces for (used with --org)")
-	cmdutil.AddJSONFlags(listCmd, &exporter, api.CodespaceFields)
+	cmdutil.AddJSONFlags(listCmd, &exporter, api.ListCodespaceFields)
 
 	listCmd.Flags().BoolVarP(&opts.useWeb, "web", "w", false, "List codespaces in the web browser, cannot be used with --user or --org")
 
@@ -79,7 +79,7 @@ func newListCmd(app *App) *cobra.Command {
 
 func (a *App) List(ctx context.Context, opts *listOptions, exporter cmdutil.Exporter) error {
 	if opts.useWeb && opts.repo == "" {
-		return a.browser.Browse("https://github.com/codespaces")
+		return a.browser.Browse(fmt.Sprintf("%s/codespaces", a.apiClient.ServerURL()))
 	}
 
 	var codespaces []*api.Codespace
@@ -113,7 +113,7 @@ func (a *App) List(ctx context.Context, opts *listOptions, exporter cmdutil.Expo
 	}
 
 	if opts.useWeb && codespaces[0].Repository.ID > 0 {
-		return a.browser.Browse(fmt.Sprintf("https://github.com/codespaces?repository_id=%d", codespaces[0].Repository.ID))
+		return a.browser.Browse(fmt.Sprintf("%s/codespaces?repository_id=%d", a.apiClient.ServerURL(), codespaces[0].Repository.ID))
 	}
 
 	//nolint:staticcheck // SA1019: utils.NewTablePrinter is deprecated: use internal/tableprinter

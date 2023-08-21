@@ -4,11 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/AlecAivazis/survey/v2"
 	"github.com/cli/cli/v2/api"
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/set"
-	"github.com/cli/cli/v2/pkg/surveyext"
 )
 
 type Editable struct {
@@ -201,34 +199,98 @@ func (e Editable) MilestoneId() (*string, error) {
 	return &m, err
 }
 
-func EditFieldsSurvey(editable *Editable, editorCommand string) error {
+// Clone creates a mostly-shallow copy of Editable suitable for use in parallel
+// go routines. Fields that would be mutated will be copied.
+func (e *Editable) Clone() Editable {
+	return Editable{
+		Title:     e.Title.clone(),
+		Body:      e.Body.clone(),
+		Base:      e.Base.clone(),
+		Reviewers: e.Reviewers.clone(),
+		Assignees: e.Assignees.clone(),
+		Labels:    e.Labels.clone(),
+		Projects:  e.Projects.clone(),
+		Milestone: e.Milestone.clone(),
+		// Shallow copy since no mutation.
+		Metadata: e.Metadata,
+	}
+}
+
+func (es *EditableString) clone() EditableString {
+	return EditableString{
+		Value:   es.Value,
+		Default: es.Default,
+		Edited:  es.Edited,
+		// Shallow copies since no mutation.
+		Options: es.Options,
+	}
+}
+
+func (es *EditableSlice) clone() EditableSlice {
+	cpy := EditableSlice{
+		Edited:  es.Edited,
+		Allowed: es.Allowed,
+		// Shallow copies since no mutation.
+		Options: es.Options,
+		// Copy mutable string slices.
+		Add:     make([]string, len(es.Add)),
+		Remove:  make([]string, len(es.Remove)),
+		Value:   make([]string, len(es.Value)),
+		Default: make([]string, len(es.Default)),
+	}
+	copy(cpy.Add, es.Add)
+	copy(cpy.Remove, es.Remove)
+	copy(cpy.Value, es.Value)
+	copy(cpy.Default, es.Default)
+	return cpy
+}
+
+func (ep *EditableProjects) clone() EditableProjects {
+	return EditableProjects{
+		EditableSlice: ep.EditableSlice.clone(),
+		ProjectItems:  ep.ProjectItems,
+	}
+}
+
+type EditPrompter interface {
+	Select(string, string, []string) (int, error)
+	Input(string, string) (string, error)
+	MarkdownEditor(string, string, bool) (string, error)
+	MultiSelect(string, []string, []string) ([]int, error)
+	Confirm(string, bool) (bool, error)
+}
+
+func EditFieldsSurvey(p EditPrompter, editable *Editable, editorCommand string) error {
 	var err error
 	if editable.Title.Edited {
-		editable.Title.Value, err = titleSurvey(editable.Title.Default)
+		editable.Title.Value, err = p.Input("Title", editable.Title.Default)
 		if err != nil {
 			return err
 		}
 	}
 	if editable.Body.Edited {
-		editable.Body.Value, err = bodySurvey(editable.Body.Default, editorCommand)
+		editable.Body.Value, err = p.MarkdownEditor("Body", editable.Body.Default, false)
 		if err != nil {
 			return err
 		}
 	}
 	if editable.Reviewers.Edited {
-		editable.Reviewers.Value, err = multiSelectSurvey("Reviewers", editable.Reviewers.Default, editable.Reviewers.Options)
+		editable.Reviewers.Value, err = multiSelectSurvey(
+			p, "Reviewers", editable.Reviewers.Default, editable.Reviewers.Options)
 		if err != nil {
 			return err
 		}
 	}
 	if editable.Assignees.Edited {
-		editable.Assignees.Value, err = multiSelectSurvey("Assignees", editable.Assignees.Default, editable.Assignees.Options)
+		editable.Assignees.Value, err = multiSelectSurvey(
+			p, "Assignees", editable.Assignees.Default, editable.Assignees.Options)
 		if err != nil {
 			return err
 		}
 	}
 	if editable.Labels.Edited {
-		editable.Labels.Add, err = multiSelectSurvey("Labels", editable.Labels.Default, editable.Labels.Options)
+		editable.Labels.Add, err = multiSelectSurvey(
+			p, "Labels", editable.Labels.Default, editable.Labels.Options)
 		if err != nil {
 			return err
 		}
@@ -246,18 +308,19 @@ func EditFieldsSurvey(editable *Editable, editorCommand string) error {
 		}
 	}
 	if editable.Projects.Edited {
-		editable.Projects.Value, err = multiSelectSurvey("Projects", editable.Projects.Default, editable.Projects.Options)
+		editable.Projects.Value, err = multiSelectSurvey(
+			p, "Projects", editable.Projects.Default, editable.Projects.Options)
 		if err != nil {
 			return err
 		}
 	}
 	if editable.Milestone.Edited {
-		editable.Milestone.Value, err = milestoneSurvey(editable.Milestone.Default, editable.Milestone.Options)
+		editable.Milestone.Value, err = milestoneSurvey(p, editable.Milestone.Default, editable.Milestone.Options)
 		if err != nil {
 			return err
 		}
 	}
-	confirm, err := confirmSurvey()
+	confirm, err := p.Confirm("Submit?", true)
 	if err != nil {
 		return err
 	}
@@ -268,7 +331,7 @@ func EditFieldsSurvey(editable *Editable, editorCommand string) error {
 	return nil
 }
 
-func FieldsToEditSurvey(editable *Editable) error {
+func FieldsToEditSurvey(p EditPrompter, editable *Editable) error {
 	contains := func(s []string, str string) bool {
 		for _, v := range s {
 			if v == str {
@@ -283,7 +346,7 @@ func FieldsToEditSurvey(editable *Editable) error {
 		opts = append(opts, "Reviewers")
 	}
 	opts = append(opts, "Assignees", "Labels", "Projects", "Milestone")
-	results, err := multiSelectSurvey("What would you like to edit?", []string{}, opts)
+	results, err := multiSelectSurvey(p, "What would you like to edit?", []string{}, opts)
 	if err != nil {
 		return err
 	}
@@ -360,66 +423,34 @@ func FetchOptions(client *api.Client, repo ghrepo.Interface, editable *Editable)
 	return nil
 }
 
-func titleSurvey(title string) (string, error) {
-	var result string
-	q := &survey.Input{
-		Message: "Title",
-		Default: title,
-	}
-	err := survey.AskOne(q, &result)
-	return result, err
-}
-
-func bodySurvey(body, editorCommand string) (string, error) {
-	var result string
-	q := &surveyext.GhEditor{
-		EditorCommand: editorCommand,
-		Editor: &survey.Editor{
-			Message:       "Body",
-			FileName:      "*.md",
-			Default:       body,
-			HideDefault:   true,
-			AppendDefault: true,
-		},
-	}
-	err := survey.AskOne(q, &result)
-	return result, err
-}
-
-func multiSelectSurvey(message string, defaults, options []string) ([]string, error) {
+func multiSelectSurvey(p EditPrompter, message string, defaults, options []string) (results []string, err error) {
 	if len(options) == 0 {
 		return nil, nil
 	}
-	var results []string
-	q := &survey.MultiSelect{
-		Message: message,
-		Options: options,
-		Default: defaults,
+
+	var selected []int
+	selected, err = p.MultiSelect(message, defaults, options)
+	if err != nil {
+		return
 	}
-	err := survey.AskOne(q, &results)
+
+	for _, i := range selected {
+		results = append(results, options[i])
+	}
+
 	return results, err
 }
 
-func milestoneSurvey(title string, opts []string) (string, error) {
+func milestoneSurvey(p EditPrompter, title string, opts []string) (result string, err error) {
 	if len(opts) == 0 {
 		return "", nil
 	}
-	var result string
-	q := &survey.Select{
-		Message: "Milestone",
-		Options: opts,
-		Default: title,
+	var selected int
+	selected, err = p.Select("Milestone", title, opts)
+	if err != nil {
+		return
 	}
-	err := survey.AskOne(q, &result)
-	return result, err
-}
 
-func confirmSurvey() (bool, error) {
-	var result bool
-	q := &survey.Confirm{
-		Message: "Submit?",
-		Default: true,
-	}
-	err := survey.AskOne(q, &result)
-	return result, err
+	result = opts[selected]
+	return
 }

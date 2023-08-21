@@ -24,6 +24,7 @@ type ListOptions struct {
 	IO         *iostreams.IOStreams
 	HttpClient func() (*http.Client, error)
 	BaseRepo   func() (ghrepo.Interface, error)
+	Prompter   iprompter
 
 	Exporter cmdutil.Exporter
 
@@ -32,14 +33,21 @@ type ListOptions struct {
 	Branch           string
 	Actor            string
 	Status           string
+	Event            string
+	Created          string
 
 	now time.Time
+}
+
+type iprompter interface {
+	Select(string, string, []string) (int, error)
 }
 
 func NewCmdList(f *cmdutil.Factory, runF func(*ListOptions) error) *cobra.Command {
 	opts := &ListOptions{
 		IO:         f.IOStreams,
 		HttpClient: f.HttpClient,
+		Prompter:   f.Prompter,
 		now:        time.Now(),
 	}
 
@@ -68,6 +76,8 @@ func NewCmdList(f *cmdutil.Factory, runF func(*ListOptions) error) *cobra.Comman
 	cmd.Flags().StringVarP(&opts.WorkflowSelector, "workflow", "w", "", "Filter runs by workflow")
 	cmd.Flags().StringVarP(&opts.Branch, "branch", "b", "", "Filter runs by branch")
 	cmd.Flags().StringVarP(&opts.Actor, "user", "u", "", "Filter runs by user who triggered the run")
+	cmd.Flags().StringVarP(&opts.Event, "event", "e", "", "Filter runs by which `event` triggered the run")
+	cmd.Flags().StringVarP(&opts.Created, "created", "", "", "Filter runs by the `date` it was created")
 	cmdutil.StringEnumFlag(cmd, &opts.Status, "status", "s", "", shared.AllStatuses, "Filter runs by status")
 	cmdutil.AddJSONFlags(cmd, &opts.Exporter, shared.RunFields)
 
@@ -89,15 +99,19 @@ func listRun(opts *ListOptions) error {
 	client := api.NewClientFromHTTP(c)
 
 	filters := &shared.FilterOptions{
-		Branch: opts.Branch,
-		Actor:  opts.Actor,
-		Status: opts.Status,
+		Branch:  opts.Branch,
+		Actor:   opts.Actor,
+		Status:  opts.Status,
+		Event:   opts.Event,
+		Created: opts.Created,
 	}
 
 	opts.IO.StartProgressIndicator()
 	if opts.WorkflowSelector != "" {
 		states := []workflowShared.WorkflowState{workflowShared.Active}
-		if workflow, err := workflowShared.ResolveWorkflow(opts.IO, client, baseRepo, false, opts.WorkflowSelector, states); err == nil {
+		if workflow, err := workflowShared.ResolveWorkflow(
+			opts.Prompter, opts.IO, client, baseRepo, false, opts.WorkflowSelector,
+			states); err == nil {
 			filters.WorkflowID = workflow.ID
 			filters.WorkflowName = workflow.Name
 		} else {

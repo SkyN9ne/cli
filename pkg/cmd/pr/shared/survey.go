@@ -4,11 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/AlecAivazis/survey/v2"
 	"github.com/cli/cli/v2/api"
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/iostreams"
-	"github.com/cli/cli/v2/pkg/prompt"
 )
 
 type Action int
@@ -36,6 +34,7 @@ type Prompt interface {
 	Select(string, string, []string) (int, error)
 	MarkdownEditor(string, string, bool) (string, error)
 	Confirm(string, bool) (bool, error)
+	MultiSelect(string, []string, []string) ([]int, error)
 }
 
 func ConfirmIssueSubmission(p Prompt, allowPreview bool, allowMetadata bool) (Action, error) {
@@ -141,7 +140,7 @@ type RepoMetadataFetcher interface {
 	RepoMetadataFetch(api.RepoMetadataInput) (*api.RepoMetadataResult, error)
 }
 
-func MetadataSurvey(io *iostreams.IOStreams, baseRepo ghrepo.Interface, fetcher RepoMetadataFetcher, state *IssueMetadataState) error {
+func MetadataSurvey(p Prompt, io *iostreams.IOStreams, baseRepo ghrepo.Interface, fetcher RepoMetadataFetcher, state *IssueMetadataState) error {
 	isChosen := func(m string) bool {
 		for _, c := range state.Metadata {
 			if m == c {
@@ -159,18 +158,12 @@ func MetadataSurvey(io *iostreams.IOStreams, baseRepo ghrepo.Interface, fetcher 
 	}
 	extraFieldsOptions = append(extraFieldsOptions, "Assignees", "Labels", "Projects", "Milestone")
 
-	//nolint:staticcheck // SA1019: prompt.SurveyAsk is deprecated: use Prompter
-	err := prompt.SurveyAsk([]*survey.Question{
-		{
-			Name: "metadata",
-			Prompt: &survey.MultiSelect{
-				Message: "What would you like to add?",
-				Options: extraFieldsOptions,
-			},
-		},
-	}, state)
+	selected, err := p.MultiSelect("What would you like to add?", nil, extraFieldsOptions)
 	if err != nil {
-		return fmt.Errorf("could not prompt: %w", err)
+		return err
+	}
+	for _, i := range selected {
+		state.Metadata = append(state.Metadata, extraFieldsOptions[i])
 	}
 
 	metadataInput := api.RepoMetadataInput{
@@ -214,59 +207,62 @@ func MetadataSurvey(io *iostreams.IOStreams, baseRepo ghrepo.Interface, fetcher 
 		milestones = append(milestones, m.Title)
 	}
 
-	var mqs []*survey.Question
+	values := struct {
+		Reviewers []string
+		Assignees []string
+		Labels    []string
+		Projects  []string
+		Milestone string
+	}{}
+
 	if isChosen("Reviewers") {
 		if len(reviewers) > 0 {
-			mqs = append(mqs, &survey.Question{
-				Name: "reviewers",
-				Prompt: &survey.MultiSelect{
-					Message: "Reviewers",
-					Options: reviewers,
-					Default: state.Reviewers,
-				},
-			})
+			selected, err := p.MultiSelect("Reviewers", state.Reviewers, reviewers)
+			if err != nil {
+				return err
+			}
+			for _, i := range selected {
+				values.Reviewers = append(values.Reviewers, reviewers[i])
+			}
 		} else {
 			fmt.Fprintln(io.ErrOut, "warning: no available reviewers")
 		}
 	}
 	if isChosen("Assignees") {
 		if len(assignees) > 0 {
-			mqs = append(mqs, &survey.Question{
-				Name: "assignees",
-				Prompt: &survey.MultiSelect{
-					Message: "Assignees",
-					Options: assignees,
-					Default: state.Assignees,
-				},
-			})
+			selected, err := p.MultiSelect("Assignees", state.Assignees, assignees)
+			if err != nil {
+				return err
+			}
+			for _, i := range selected {
+				values.Assignees = append(values.Assignees, assignees[i])
+			}
 		} else {
 			fmt.Fprintln(io.ErrOut, "warning: no assignable users")
 		}
 	}
 	if isChosen("Labels") {
 		if len(labels) > 0 {
-			mqs = append(mqs, &survey.Question{
-				Name: "labels",
-				Prompt: &survey.MultiSelect{
-					Message: "Labels",
-					Options: labels,
-					Default: state.Labels,
-				},
-			})
+			selected, err := p.MultiSelect("Labels", state.Labels, labels)
+			if err != nil {
+				return err
+			}
+			for _, i := range selected {
+				values.Labels = append(values.Labels, labels[i])
+			}
 		} else {
 			fmt.Fprintln(io.ErrOut, "warning: no labels in the repository")
 		}
 	}
 	if isChosen("Projects") {
 		if len(projects) > 0 {
-			mqs = append(mqs, &survey.Question{
-				Name: "projects",
-				Prompt: &survey.MultiSelect{
-					Message: "Projects",
-					Options: projects,
-					Default: state.Projects,
-				},
-			})
+			selected, err := p.MultiSelect("Projects", state.Projects, projects)
+			if err != nil {
+				return err
+			}
+			for _, i := range selected {
+				values.Projects = append(values.Projects, projects[i])
+			}
 		} else {
 			fmt.Fprintln(io.ErrOut, "warning: no projects to choose from")
 		}
@@ -276,32 +272,17 @@ func MetadataSurvey(io *iostreams.IOStreams, baseRepo ghrepo.Interface, fetcher 
 			var milestoneDefault string
 			if len(state.Milestones) > 0 {
 				milestoneDefault = state.Milestones[0]
+			} else {
+				milestoneDefault = milestones[1]
 			}
-			mqs = append(mqs, &survey.Question{
-				Name: "milestone",
-				Prompt: &survey.Select{
-					Message: "Milestone",
-					Options: milestones,
-					Default: milestoneDefault,
-				},
-			})
+			selected, err := p.Select("Milestone", milestoneDefault, milestones)
+			if err != nil {
+				return err
+			}
+			values.Milestone = milestones[selected]
 		} else {
 			fmt.Fprintln(io.ErrOut, "warning: no milestones in the repository")
 		}
-	}
-
-	values := struct {
-		Reviewers []string
-		Assignees []string
-		Labels    []string
-		Projects  []string
-		Milestone string
-	}{}
-
-	//nolint:staticcheck // SA1019: prompt.SurveyAsk is deprecated: use Prompter
-	err = prompt.SurveyAsk(mqs, &values)
-	if err != nil {
-		return fmt.Errorf("could not prompt: %w", err)
 	}
 
 	if isChosen("Reviewers") {
