@@ -2,16 +2,15 @@ package root
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 
 	"github.com/MakeNowJust/heredoc"
-	"github.com/cli/cli/v2/api"
 	actionsCmd "github.com/cli/cli/v2/pkg/cmd/actions"
 	aliasCmd "github.com/cli/cli/v2/pkg/cmd/alias"
 	"github.com/cli/cli/v2/pkg/cmd/alias/shared"
 	apiCmd "github.com/cli/cli/v2/pkg/cmd/api"
+	attestationCmd "github.com/cli/cli/v2/pkg/cmd/attestation"
 	authCmd "github.com/cli/cli/v2/pkg/cmd/auth"
 	browseCmd "github.com/cli/cli/v2/pkg/cmd/browse"
 	cacheCmd "github.com/cli/cli/v2/pkg/cmd/cache"
@@ -74,7 +73,12 @@ func NewCmdRoot(f *cmdutil.Factory, version, buildDate string) (*cobra.Command, 
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			// require that the user is authenticated before running most commands
 			if cmdutil.IsAuthCheckEnabled(cmd) && !cmdutil.CheckAuth(cfg) {
-				fmt.Fprint(io.ErrOut, authHelp())
+				parent := cmd.Parent()
+				if parent != nil && parent.Use == "codespace" {
+					fmt.Fprintln(io.ErrOut, "To get started with GitHub CLI, please run:  gh auth login -s codespace")
+				} else {
+					fmt.Fprint(io.ErrOut, authHelp())
+				}
 				return &AuthError{}
 			}
 			return nil
@@ -121,6 +125,7 @@ func NewCmdRoot(f *cmdutil.Factory, version, buildDate string) (*cobra.Command, 
 	cmd.AddCommand(actionsCmd.NewCmdActions(f))
 	cmd.AddCommand(aliasCmd.NewCmdAlias(f))
 	cmd.AddCommand(authCmd.NewCmdAuth(f))
+	cmd.AddCommand(attestationCmd.NewCmdAttestation(f))
 	cmd.AddCommand(configCmd.NewCmdConfig(f))
 	cmd.AddCommand(creditsCmd.NewCmdCredits(f, nil))
 	cmd.AddCommand(gistCmd.NewCmdGist(f))
@@ -150,13 +155,7 @@ func NewCmdRoot(f *cmdutil.Factory, version, buildDate string) (*cobra.Command, 
 	cmd.AddCommand(workflowCmd.NewCmdWorkflow(&repoResolvingCmdFactory))
 	cmd.AddCommand(labelCmd.NewCmdLabel(&repoResolvingCmdFactory))
 	cmd.AddCommand(cacheCmd.NewCmdCache(&repoResolvingCmdFactory))
-
-	// the `api` command should not inherit any extra HTTP headers
-	bareHTTPCmdFactory := *f
-	bareHTTPCmdFactory.HttpClient = bareHTTPClient(f, version)
-	bareHTTPCmdFactory.BaseRepo = factory.SmartBaseRepoFunc(&bareHTTPCmdFactory)
-
-	cmd.AddCommand(apiCmd.NewCmdApi(&bareHTTPCmdFactory, nil))
+	cmd.AddCommand(apiCmd.NewCmdApi(&repoResolvingCmdFactory, nil))
 
 	// Help topics
 	var referenceCmd *cobra.Command
@@ -221,21 +220,4 @@ func NewCmdRoot(f *cmdutil.Factory, version, buildDate string) (*cobra.Command, 
 	referenceCmd.Long = stringifyReference(cmd)
 	referenceCmd.SetHelpFunc(longPager(f.IOStreams))
 	return cmd, nil
-}
-
-func bareHTTPClient(f *cmdutil.Factory, version string) func() (*http.Client, error) {
-	return func() (*http.Client, error) {
-		cfg, err := f.Config()
-		if err != nil {
-			return nil, err
-		}
-		opts := api.HTTPClientOptions{
-			AppVersion:        version,
-			Config:            cfg.Authentication(),
-			Log:               f.IOStreams.ErrOut,
-			LogColorize:       f.IOStreams.ColorEnabled(),
-			SkipAcceptHeaders: true,
-		}
-		return api.NewHTTPClient(opts)
-	}
 }

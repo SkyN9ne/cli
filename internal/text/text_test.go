@@ -55,56 +55,94 @@ func TestFuzzyAgoAbbr(t *testing.T) {
 	}
 }
 
-func TestRemoveDiacritics(t *testing.T) {
-	tests := [][]string{
-		// no diacritics
-		{"e", "e"},
-		{"و", "و"},
-		{"И", "И"},
-		{"ж", "ж"},
-		{"私", "私"},
-		{"万", "万"},
-
-		// diacritics test sets
-		{"à", "a"},
-		{"é", "e"},
-		{"è", "e"},
-		{"ô", "o"},
-		{"ᾳ", "α"},
-		{"εͅ", "ε"},
-		{"ῃ", "η"},
-		{"ιͅ", "ι"},
-
-		{"ؤ", "و"},
-
-		{"ā", "a"},
-		{"č", "c"},
-		{"ģ", "g"},
-		{"ķ", "k"},
-		{"ņ", "n"},
-		{"š", "s"},
-		{"ž", "z"},
-
-		{"ŵ", "w"},
-		{"ŷ", "y"},
-		{"ä", "a"},
-		{"ÿ", "y"},
-		{"á", "a"},
-		{"ẁ", "w"},
-		{"ỳ", "y"},
-		{"ō", "o"},
-
-		// full words
-		{"Miķelis", "Mikelis"},
-		{"François", "Francois"},
-		{"žluťoučký", "zlutoucky"},
-		{"învățătorița", "invatatorita"},
-		{"Kękę przy łóżku", "Keke przy łozku"},
+func TestFormatSlice(t *testing.T) {
+	tests := []struct {
+		name        string
+		values      []string
+		indent      uint
+		lineLength  uint
+		prependWith string
+		appendWith  string
+		sort        bool
+		wants       string
+	}{
+		{
+			name:       "empty",
+			lineLength: 10,
+			values:     []string{},
+			wants:      "",
+		},
+		{
+			name:       "empty with indent",
+			lineLength: 10,
+			indent:     2,
+			values:     []string{},
+			wants:      "  ",
+		},
+		{
+			name:       "single",
+			lineLength: 10,
+			values:     []string{"foo"},
+			wants:      "foo",
+		},
+		{
+			name:       "single with indent",
+			lineLength: 10,
+			indent:     2,
+			values:     []string{"foo"},
+			wants:      "  foo",
+		},
+		{
+			name:       "long single with indent",
+			lineLength: 10,
+			indent:     2,
+			values:     []string{"some-long-value"},
+			wants:      "  some-long-value",
+		},
+		{
+			name:       "exact line length",
+			lineLength: 4,
+			values:     []string{"a", "b"},
+			wants:      "a, b",
+		},
+		{
+			name:       "values longer than line length",
+			lineLength: 4,
+			values:     []string{"long-value", "long-value"},
+			wants:      "long-value,\nlong-value",
+		},
+		{
+			name:       "zero line length (no wrapping expected)",
+			lineLength: 0,
+			values:     []string{"foo", "bar"},
+			wants:      "foo, bar",
+		},
+		{
+			name:       "simple",
+			lineLength: 10,
+			values:     []string{"foo", "bar", "baz", "foo", "bar", "baz"},
+			wants:      "foo, bar,\nbaz, foo,\nbar, baz",
+		},
+		{
+			name:        "simple, surrounded",
+			lineLength:  13,
+			prependWith: "<",
+			appendWith:  ">",
+			values:      []string{"foo", "bar", "baz", "foo", "bar", "baz"},
+			wants:       "<foo>, <bar>,\n<baz>, <foo>,\n<bar>, <baz>",
+		},
+		{
+			name:       "sort",
+			lineLength: 99,
+			sort:       true,
+			values:     []string{"c", "b", "a"},
+			wants:      "a, b, c",
+		},
 	}
 
 	for _, tt := range tests {
-		t.Run(RemoveDiacritics(tt[0]), func(t *testing.T) {
-			assert.Equal(t, tt[1], RemoveDiacritics(tt[0]))
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.wants, FormatSlice(tt.values, tt.lineLength, tt.indent, tt.prependWith, tt.appendWith, tt.sort))
 		})
 	}
 }

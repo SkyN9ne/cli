@@ -13,6 +13,7 @@ import (
 
 	"github.com/cli/cli/v2/api"
 	"github.com/cli/cli/v2/internal/ghrepo"
+	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
 	"github.com/cli/go-gh/v2/pkg/asciisanitizer"
 	"golang.org/x/text/transform"
@@ -47,6 +48,10 @@ func (w *Workflow) Disabled() bool {
 
 func (w *Workflow) Base() string {
 	return path.Base(w.Path)
+}
+
+func (w *Workflow) ExportData(fields []string) map[string]interface{} {
+	return cmdutil.StructExportData(w, fields)
 }
 
 func GetWorkflows(client *api.Client, repo ghrepo.Interface, limit int) ([]Workflow, error) {

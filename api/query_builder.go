@@ -268,6 +268,7 @@ var IssueFields = []string{
 	"title",
 	"updatedAt",
 	"url",
+	"stateReason",
 }
 
 var PullRequestFields = append(IssueFields,
@@ -298,6 +299,12 @@ var PullRequestFields = append(IssueFields,
 	"statusCheckRollup",
 )
 
+// Some fields are only valid in the context of issues.
+var issueOnlyFields = []string{
+	"isPinned",
+	"stateReason",
+}
+
 // IssueGraphQL constructs a GraphQL query fragment for a set of issue fields.
 func IssueGraphQL(fields []string) string {
 	var q []string
@@ -318,7 +325,7 @@ func IssueGraphQL(fields []string) string {
 		case "projectCards":
 			q = append(q, `projectCards(first:100){nodes{project{name}column{name}},totalCount}`)
 		case "projectItems":
-			q = append(q, `projectItems(first:100){nodes{id, project{id,title}},totalCount}`)
+			q = append(q, `projectItems(first:100){nodes{id, project{id,title}, status:fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue{optionId,name}}},totalCount}`)
 		case "milestone":
 			q = append(q, `milestone{number,title,description,dueOn}`)
 		case "reactionGroups":
@@ -363,10 +370,9 @@ func IssueGraphQL(fields []string) string {
 // PullRequestGraphQL constructs a GraphQL query fragment for a set of pull request fields.
 // It will try to sanitize the fields to just those available on pull request.
 func PullRequestGraphQL(fields []string) string {
-	invalidFields := []string{"isPinned", "stateReason"}
 	s := set.NewStringSet()
 	s.AddValues(fields)
-	s.RemoveValues(invalidFields)
+	s.RemoveValues(issueOnlyFields)
 	return IssueGraphQL(s.ToSlice())
 }
 
@@ -442,6 +448,7 @@ var RepositoryFields = []string{
 	"assignableUsers",
 	"mentionableUsers",
 	"projects",
+	"projectsV2",
 
 	// "branchProtectionRules", // too complex to expose
 	// "collaborators", // does it make sense to expose without affiliation filter?
@@ -487,6 +494,8 @@ func RepositoryGraphQL(fields []string) string {
 			q = append(q, "mentionableUsers(first:100){nodes{id,login,name}}")
 		case "projects":
 			q = append(q, "projects(first:100,states:OPEN){nodes{id,name,number,body,resourcePath}}")
+		case "projectsV2":
+			q = append(q, "projectsV2(first:100,query:\"is:open\"){nodes{id,number,title,resourcePath,closed,url}}")
 		case "watchers":
 			q = append(q, "watchers{totalCount}")
 		case "issues":

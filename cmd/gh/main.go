@@ -17,6 +17,7 @@ import (
 	"github.com/cli/cli/v2/api"
 	"github.com/cli/cli/v2/internal/build"
 	"github.com/cli/cli/v2/internal/config"
+	"github.com/cli/cli/v2/internal/config/migration"
 	"github.com/cli/cli/v2/internal/update"
 	"github.com/cli/cli/v2/pkg/cmd/factory"
 	"github.com/cli/cli/v2/pkg/cmd/root"
@@ -34,10 +35,11 @@ var updaterEnabled = ""
 type exitCode int
 
 const (
-	exitOK     exitCode = 0
-	exitError  exitCode = 1
-	exitCancel exitCode = 2
-	exitAuth   exitCode = 4
+	exitOK      exitCode = 0
+	exitError   exitCode = 1
+	exitCancel  exitCode = 2
+	exitAuth    exitCode = 4
+	exitPending exitCode = 8
 )
 
 func main() {
@@ -54,6 +56,14 @@ func mainRun() exitCode {
 	stderr := cmdFactory.IOStreams.ErrOut
 
 	ctx := context.Background()
+
+	if cfg, err := cmdFactory.Config(); err == nil {
+		var m migration.MultiAccount
+		if err := cfg.Migrate(m); err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitError
+		}
+	}
 
 	updateCtx, updateCancel := context.WithCancel(ctx)
 	defer updateCancel()
@@ -113,6 +123,8 @@ func mainRun() exitCode {
 		var authError *root.AuthError
 		if err == cmdutil.SilentError {
 			return exitError
+		} else if err == cmdutil.PendingError {
+			return exitPending
 		} else if cmdutil.IsUserCancellation(err) {
 			if errors.Is(err, terminal.InterruptErr) {
 				// ensure the next shell prompt will start on its own line

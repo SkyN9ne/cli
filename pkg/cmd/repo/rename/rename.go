@@ -9,7 +9,7 @@ import (
 	"github.com/cli/cli/v2/api"
 	ghContext "github.com/cli/cli/v2/context"
 	"github.com/cli/cli/v2/git"
-	"github.com/cli/cli/v2/internal/config"
+	"github.com/cli/cli/v2/internal/gh"
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
@@ -26,7 +26,7 @@ type RenameOptions struct {
 	GitClient       *git.Client
 	IO              *iostreams.IOStreams
 	Prompter        iprompter
-	Config          func() (config.Config, error)
+	Config          func() (gh.Config, error)
 	BaseRepo        func() (ghrepo.Interface, error)
 	Remotes         func() (ghContext.Remotes, error)
 	DoConfirm       bool
@@ -124,8 +124,6 @@ func renameRun(opts *RenameOptions) error {
 		return err
 	}
 
-	renamedRepo := ghrepo.New(newRepo.Owner.Login, newRepo.Name)
-
 	cs := opts.IO.ColorScheme()
 	if opts.IO.IsStdoutTTY() {
 		fmt.Fprintf(opts.IO.Out, "%s Renamed repository %s\n", cs.SuccessIcon(), ghrepo.FullName(newRepo))
@@ -135,9 +133,13 @@ func renameRun(opts *RenameOptions) error {
 		return nil
 	}
 
-	remote, err := updateRemote(currRepo, renamedRepo, opts)
+	remote, err := updateRemote(currRepo, newRepo, opts)
 	if err != nil {
-		fmt.Fprintf(opts.IO.ErrOut, "%s Warning: unable to update remote %q: %v\n", cs.WarningIcon(), remote.Name, err)
+		if remote != nil {
+			fmt.Fprintf(opts.IO.ErrOut, "%s Warning: unable to update remote %q: %v\n", cs.WarningIcon(), remote.Name, err)
+		} else {
+			fmt.Fprintf(opts.IO.ErrOut, "%s Warning: unable to update remote: %v\n", cs.WarningIcon(), err)
+		}
 	} else if opts.IO.IsStdoutTTY() {
 		fmt.Fprintf(opts.IO.Out, "%s Updated the %q remote\n", cs.SuccessIcon(), remote.Name)
 	}
@@ -151,10 +153,7 @@ func updateRemote(repo ghrepo.Interface, renamed ghrepo.Interface, opts *RenameO
 		return nil, err
 	}
 
-	protocol, err := cfg.GetOrDefault(repo.RepoHost(), "git_protocol")
-	if err != nil {
-		return nil, err
-	}
+	protocol := cfg.GitProtocol(repo.RepoHost()).Value
 
 	remotes, err := opts.Remotes()
 	if err != nil {
